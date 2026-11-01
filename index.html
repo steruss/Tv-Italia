@@ -95,6 +95,20 @@ footer{color:var(--muted);font-size:.8rem;padding:10px 0}
 .ch .name .t{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .ch .name .prog{font-weight:400;font-size:.85rem;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:2px}
 .note{color:var(--muted);font-size:.9rem}
+.fsnav{position:absolute;top:50%;transform:translateY(-50%);width:84px;height:120px;border:0;border-radius:16px;
+  background:rgba(0,0,0,.45);color:#fff;font-size:3.4rem;line-height:1;cursor:pointer;display:none;z-index:3;transition:opacity .3s}
+.fsnav.prev{left:max(20px,env(safe-area-inset-left,0px))}
+.fsnav.next{right:max(20px,env(safe-area-inset-right,0px))}
+.fsnav:active{background:rgba(47,140,255,.7)}
+.screen.full .fsnav{display:block}
+.screen.full.idle .fsnav{opacity:0}
+.screen.full{border-radius:0;border:0}
+.toast{position:absolute;left:50%;top:max(24px,env(safe-area-inset-top,0px));transform:translateX(-50%);max-width:80%;
+  background:rgba(0,0,0,.72);color:#fff;border-radius:14px;padding:10px 22px;text-align:center;z-index:4;pointer-events:none;transition:opacity .3s}
+.toast .tn{font-family:var(--display);font-size:2rem;font-weight:700;display:flex;align-items:center;justify-content:center;gap:12px}
+.toast .tn .n{color:var(--accent)}
+.toast .tp{font-size:1.05rem;color:#d4d9e1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.toast.off{opacity:0}
 </style>
 </head>
 <body>
@@ -107,6 +121,9 @@ footer{color:var(--muted);font-size:.8rem;padding:10px 0}
   <section class="stage">
     <div class="screen" id="screen">
       <video id="video" playsinline></video>
+      <button class="fsnav prev" id="fsPrev" type="button" aria-label="Canale precedente">‹</button>
+      <button class="fsnav next" id="fsNext" type="button" aria-label="Canale successivo">›</button>
+      <div class="toast off" id="toast"><div class="tn"><span class="n" id="toastNum"></span><span id="toastName"></span></div><div class="tp" id="toastProg"></div></div>
       <div class="overlay dim" id="overlay">
         <div class="big" id="ovBig">Scegli un canale</div>
         <div class="small" id="ovSmall">Tocca un canale dall'elenco per guardarlo qui.</div>
@@ -148,7 +165,7 @@ footer{color:var(--muted);font-size:.8rem;padding:10px 0}
 
 <script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.13/dist/hls.min.js"></script>
 <script>
-const VERSION = "1.4";
+const VERSION = "1.5";
 const LIST_URL = "https://raw.githubusercontent.com/Free-TV/IPTV/master/playlists/playlist_italy.m3u8";
 const $ = id => document.getElementById(id);
 $("ver").textContent = "Versione " + VERSION;
@@ -328,7 +345,7 @@ function play(idx){
   if(idx>=channels.length) idx=0;
   current=idx; urlIdx=0;
   $("nowName").textContent=channels[idx].name; $("liveBadge").hidden=true;
-  store("lastCh", channels[idx].key); showEpg();
+  store("lastCh", channels[idx].key); showEpg(); toast(channels[idx]);
   render();
   tryUrl();
 }
@@ -374,8 +391,45 @@ function tryUrl(){
 }
 
 $("screen").addEventListener("click",()=>{ if(video.muted && current>=0){ video.muted=false; status("In onda: "+channels[current].name); } });
-$("pPrev").onclick=()=>play(current<0?0:current-1);
-$("pNext").onclick=()=>play(current+1);
+// Ordine dei canali per le frecce: preferiti (se attivo "Solo preferiti"), altrimenti i nazionali che funzionano
+function sequence(){
+  let seq = channels.map((c,i)=>i).filter(i=>channels[i].national && (!isBad(channels[i]) || i===current));
+  if(onlyFav && favs.size) seq = channels.map((c,i)=>i).filter(i=>favs.has(channels[i].key));
+  return seq;
+}
+function step(dir){
+  if(!channels.length) return;
+  const seq=sequence();
+  if(current<0 || !seq.length){ play(seq.length?seq[0]:0); return; }
+  const pos=seq.indexOf(current);
+  if(pos<0){ play(current+dir); return; }
+  play(seq[(pos+dir+seq.length)%seq.length]);
+}
+$("pPrev").onclick=()=>step(-1);
+$("pNext").onclick=()=>step(1);
+$("fsPrev").onclick=e=>{ e.stopPropagation(); step(-1); wake(); };
+$("fsNext").onclick=e=>{ e.stopPropagation(); step(1); wake(); };
+
+// A tutto schermo le frecce si nascondono dopo 4 secondi e ricompaiono toccando
+let idleT=null;
+function wake(){ const s=$("screen"); s.classList.remove("idle"); clearTimeout(idleT); idleT=setTimeout(()=>s.classList.add("idle"),4000); }
+function fullChanged(){
+  const f=document.fullscreenElement||document.webkitFullscreenElement;
+  $("screen").classList.toggle("full", f===$("screen"));
+  wake();
+}
+document.addEventListener("fullscreenchange",fullChanged); document.addEventListener("webkitfullscreenchange",fullChanged);
+$("screen").addEventListener("pointermove",wake);
+
+// Scritta con numero e nome del canale quando cambi
+let toastT=null;
+function toast(ch){
+  $("toastNum").textContent = ch.num<999 ? ch.num : "";
+  $("toastName").textContent = ch.name;
+  const p = nowProg(ch); $("toastProg").textContent = p ? p[2] : "";
+  $("toast").classList.remove("off"); clearTimeout(toastT);
+  toastT=setTimeout(()=>$("toast").classList.add("off"),3500);
+}
 $("pFull").onclick=()=>{
   const s=$("screen");
   try{
@@ -401,11 +455,20 @@ function tvModeLabel(){ const on=!!fsEl(); $("tvMode").classList.toggle("on",on)
 document.addEventListener("fullscreenchange",tvModeLabel); document.addEventListener("webkitfullscreenchange",tvModeLabel);
 $("showOther").onclick=()=>{ $("otherList").hidden=!$("otherList").hidden; render(); };
 
-// Telecomando: su/giù cambiano canale mentre guardi
+// Telecomando: freccia destra = canale successivo, freccia sinistra = precedente.
+// Valgono anche i tasti ⏩ / ⏪ della Firestick e CH+ / CH-.
+const NEXT_KEYS=["ArrowRight","Right","MediaFastForward","MediaTrackNext","ChannelUp","PageUp"];
+const PREV_KEYS=["ArrowLeft","Left","MediaRewind","MediaTrackPrevious","ChannelDown","PageDown"];
 document.addEventListener("keydown",e=>{
-  if(current<0) return;
-  if(e.key==="ChannelUp"||e.key==="PageUp"){ e.preventDefault(); play(current-1); }
-  else if(e.key==="ChannelDown"||e.key==="PageDown"){ e.preventDefault(); play(current+1); }
+  const k=e.key, c=e.keyCode;
+  const isNext = NEXT_KEYS.includes(k) || c===39 || c===228 || c===166;
+  const isPrev = PREV_KEYS.includes(k) || c===37 || c===227 || c===167;
+  const isPause = k==="MediaPlayPause" || c===179;
+  if(!isNext && !isPrev && !isPause) return;
+  wake();
+  if(isPause){ e.preventDefault(); if(current>=0){ video.paused ? video.play().catch(()=>{}) : video.pause(); } return; }
+  e.preventDefault();
+  if(isNext) step(1); else step(-1);
 });
 
 try{ navigator.wakeLock && navigator.wakeLock.request("screen").catch(()=>{}); }catch(e){}
